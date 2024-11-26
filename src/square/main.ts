@@ -1,8 +1,7 @@
 import { Square } from './Square.js';
 import { Field, Mina, PrivateKey, AccountUpdate } from 'o1js';
 
-const useProof = false;
-const Local = await Mina.LocalBlockchain({ proofsEnabled: useProof });
+const Local = await Mina.LocalBlockchain({ proofsEnabled: false });
 Mina.setActiveInstance(Local);
 const deployerAccount = Local.testAccounts[0];
 const deployerKey = deployerAccount.key;
@@ -37,7 +36,7 @@ console.log('state after txn1:', num1.toString());
 // ----------------------------------------------------
 try {
   const txn2 = await Mina.transaction(senderAccount, async () => {
-    await zkAppInstance.update(Field(75));
+    await zkAppInstance.update(Field(81));
   });
   await txn2.prove();
   await txn2.sign([senderKey]).send();
