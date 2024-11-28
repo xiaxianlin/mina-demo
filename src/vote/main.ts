@@ -1,53 +1,37 @@
-import { AccountUpdate, Field, Mina, PrivateKey } from 'o1js';
-import { Vote } from './Vote.js';
+import { Bool, MerkleTree, Poseidon, PrivateKey, Proof } from 'o1js';
+import { MerkleWitness20, Vote, VoteState } from './Vote.js';
 
-const Local = await Mina.LocalBlockchain({ proofsEnabled: false });
-Mina.setActiveInstance(Local);
-const [deployer, member1, member2, member3] = Local.testAccounts;
 
-const app = PrivateKey.random();
-const instance = new Vote(app.toPublicKey());
 
-const summary = () => {
-  const agreed = instance.agreedCount.get();
-  const rejected = instance.rejectedCount.get();
-  console.log('Total Tickets: ', agreed.add(rejected).toString());
-  console.log('Agree Tickets: ', agreed.toString());
-  console.log('Reject Tickets: ', rejected.toString());
+// 构建成员数
+const memberTree = new MerkleTree(20);
+const members = [PrivateKey.random(), PrivateKey.random(), PrivateKey.random()];
+members.forEach((m, i) => memberTree.setLeaf(BigInt(i), Poseidon.hash(m.toPublicKey().toFields())));
+
+const vote = async (index: number, result: boolean, lastState: VoteState, lastProof: Proof<VoteState, void>) => {
+  const member = members[index];
+  const memberWitness = new MerkleWitness20(memberTree.getWitness(BigInt(index)));
+  const nextState = VoteState.create(lastState, Bool(result), member.toPublicKey(), memberWitness);
+  const { proof } = await Vote.vote(nextState, lastProof, Bool(result), member.toPublicKey(), memberWitness);
+  return { state: nextState, proof };
 };
 
-const vote = async (
-  name: string,
-  member: Mina.TestPublicKey,
-  pass: boolean
-) => {
-  console.log(`${name} start vote`);
-  console.time(name);
-  const tx1 = await Mina.transaction(member, async () => {
-    if (pass) {
-      await instance.agree();
-    } else {
-      await instance.reject();
-    }
-  });
-  await tx1.prove();
-  await tx1.sign([member.key]).send();
-  summary();
-  console.timeEnd(name);
-};
+console.log('compiling...');
+await Vote.compile();
 
-console.log('start deploy');
-console.time('>>> [Deploy] <<<');
-const deployTx = await Mina.transaction(deployer, async () => {
-  AccountUpdate.fundNewAccount(deployer);
-  await instance.deploy();
-});
-await deployTx.prove();
-await deployTx.sign([deployer.key, app]).send();
+// 初始化投票状态
+let state = VoteState.init(memberTree.getRoot());
+let { proof } = await Vote.init(state);
 
-summary();
-console.timeEnd('>>> [Deploy] <<<');
+console.log('>>>>> vote start <<<<<');
+for (let i = 0; i < members.length; i++) {
+  console.log(`Vote times: ${i}`);
+  const res = await vote(i, i % 2 === 0, state, proof);
+  state = res.state;
+  proof = res.proof;
+}
+console.log('>>>>> vote over <<<<<');
 
-await vote('member1', member1, true);
-await vote('member2', member2, true);
-await vote('member3', member3, false);
+console.log(proof.publicInput.agree.toString(), proof.publicInput.reject.toString());
+const ok = await Vote.verify(proof);
+console.log('ok', ok);
