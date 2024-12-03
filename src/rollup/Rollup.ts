@@ -9,6 +9,7 @@ import {
   method,
   ZkProgram,
   SelfProof,
+  UInt64,
 } from 'o1js';
 
 export class RollupState extends Struct({ initialRoot: Field, latestRoot: Field }) {
@@ -45,7 +46,7 @@ export class RollupState extends Struct({ initialRoot: Field, latestRoot: Field 
     state1.latestRoot.assertEquals(state2.latestRoot);
   }
 }
-
+const beforeGenesis = UInt64.from(Date.now());
 export const Rollup = ZkProgram({
   name: 'rollup-demo',
   publicInput: RollupState,
@@ -119,5 +120,7 @@ export class RollupContract extends SmartContract {
     rollupStateProof.verify();
 
     this.state.set(rollupStateProof.publicInput.latestRoot);
+
+    this.network.timestamp.requireBetween(beforeGenesis, UInt64.MAXINT());
   }
 }
