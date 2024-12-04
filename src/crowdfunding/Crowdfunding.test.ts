@@ -92,9 +92,17 @@ describe('Crowdfunding Local Net', () => {
       });
     }).rejects;
 
+    Local.setBlockchainLength(UInt32.from(100));
+
+    // 非接收人提取失败
+    expect(async () => {
+      const txn = await Mina.transaction(investor, async () => {
+        await zkApp.withdraw();
+      });
+    }).rejects;
+
     // 正常提取
     const beforeBalance = AccountUpdate.create(receiver).account.balance.get();
-    Local.setBlockchainLength(UInt32.from(100));
     const txn = await Mina.transaction(receiver, async () => {
       await zkApp.withdraw();
     });
