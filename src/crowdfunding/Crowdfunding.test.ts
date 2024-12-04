@@ -1,63 +1,113 @@
-import { AccountUpdate, fetchAccount, Field, Mina, PrivateKey, UInt64 } from 'o1js';
-import { Crowdfunding } from './Crowdfunding';
+import { AccountUpdate, Bool, Mina, PrivateKey, UInt32, UInt64 } from 'o1js';
+import { Crowdfunding, MINA } from './Crowdfunding';
 
-let proofsEnabled = false;
-const MINA = 1e9;
-// 10s 后结束
-const deadline = new UInt64(Date.now() + 10 * 1000);
-// 募集目标
-const target = Field(100);
+type UnwrapPromise<T> = T extends Promise<infer U> ? U : T;
+type LocalBlockchain = UnwrapPromise<ReturnType<typeof Mina.LocalBlockchain>>;
+
 describe('Crowdfunding Local Net', () => {
-  let deployer: Mina.TestPublicKey,
-    donator1: Mina.TestPublicKey,
-    donator2: Mina.TestPublicKey,
-    donator3: Mina.TestPublicKey,
+  let Local: LocalBlockchain,
+    deployer: Mina.TestPublicKey,
+    investor: Mina.TestPublicKey,
     receiver: Mina.TestPublicKey,
     zkAppAccount: PrivateKey,
     zkApp: Crowdfunding;
 
-  beforeAll(async () => {
-    if (proofsEnabled) {
-      await Crowdfunding.compile();
-    }
-  });
-
   beforeEach(async () => {
-    const Local = await Mina.LocalBlockchain({ proofsEnabled });
+    Local = await Mina.LocalBlockchain({ proofsEnabled: false });
     Mina.setActiveInstance(Local);
-    [deployer, donator1, donator2, donator3, receiver] = Local.testAccounts;
+    [deployer, investor, receiver] = Local.testAccounts;
 
     zkAppAccount = PrivateKey.random();
     zkApp = new Crowdfunding(zkAppAccount.toPublicKey());
   });
 
-  async function localDeploy() {
+  async function localDeploy(target = 100, duration = 10) {
     const txn = await Mina.transaction(deployer, async () => {
       AccountUpdate.fundNewAccount(deployer);
-      await zkApp.deploy();
+      await zkApp.deploy({
+        receiver,
+        target: UInt64.from(target * MINA),
+        endBlockHeight: UInt32.from(duration),
+      });
     });
     await txn.prove();
     await txn.sign([deployer.key, zkAppAccount]).send();
   }
 
-  it('发起众筹', async () => {
-    await localDeploy();
-    const txn = await Mina.transaction(deployer, async () => {
-      await zkApp.create(target, deadline);
+  async function invest(amount: UInt64) {
+    const txn = await Mina.transaction(investor, async () => {
+      await zkApp.invest(amount);
     });
     await txn.prove();
-    await txn.sign([deployer.key]).send();
-    expect(zkApp.target.get()).toEqual(target);
-    expect(zkApp.deadline.get()).toEqual(deadline);
+    await txn.sign([investor.key]).send();
+    return txn;
+  }
+
+  it('正常投资', async () => {
+    await localDeploy();
+    const amount = UInt64.from(10 * MINA);
+    await invest(amount);
+    expect(zkApp.raised.get()).toEqual(amount);
+
+    const update = AccountUpdate.create(zkAppAccount.toPublicKey());
+    expect(update.account.balance.get()).toEqual(amount);
   });
 
-  it('测试捐款', async () => {
+  it('账户余额不足', async () => {
     await localDeploy();
-    const txn = await Mina.transaction(donator1, async () => {
-      await zkApp.donate(Field(10));
+    expect(async () => {
+      const txn = await Mina.transaction(investor, async () => {
+        await zkApp.invest(UInt64.from(10000 * MINA));
+      });
+    }).rejects;
+  });
+
+  it('投资额超出剩余筹集额度', async () => {
+    await localDeploy(2);
+    expect(async () => {
+      const txn = await Mina.transaction(investor, async () => {
+        await zkApp.invest(UInt64.from(10 * MINA));
+      });
+    }).rejects;
+  });
+
+  it('众筹窗口期已过投资失败', async () => {
+    await localDeploy();
+    Local.setBlockchainLength(UInt32.from(100));
+    expect(async () => {
+      const txn = await Mina.transaction(investor, async () => {
+        await zkApp.invest(UInt64.from(10 * MINA));
+      });
+    }).rejects;
+  });
+
+  it('取款', async () => {
+    await localDeploy(20);
+    const amount = UInt64.from(20 * MINA);
+    await invest(amount);
+    // 窗口期内取款失败
+    expect(async () => {
+      const txn = await Mina.transaction(investor, async () => {
+        await zkApp.withdraw();
+      });
+    }).rejects;
+
+    // 正常提取
+    const beforeBalance = AccountUpdate.create(receiver).account.balance.get();
+    Local.setBlockchainLength(UInt32.from(100));
+    const txn = await Mina.transaction(receiver, async () => {
+      await zkApp.withdraw();
     });
     await txn.prove();
-    await txn.sign([donator1.key]).send();
-    expect(zkApp.raised.get()).toEqual(Field(10));
+    await txn.sign([receiver.key]).send();
+    expect(zkApp.closed.get()).toEqual(Bool(true));
+    expect(AccountUpdate.create(receiver).account.balance.get()).toEqual(beforeBalance.add(amount));
+
+    // 提取后再次提取失败
+    expect(async () => {
+      const txn = await Mina.transaction(investor, async () => {
+        await zkApp.withdraw();
+      });
+    }).rejects;
   });
 });
